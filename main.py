@@ -1,3 +1,4 @@
+
 """
 LLM-Powered Intelligent Query-Retrieval System for HackRx 6.0
 Handles insurance, legal, HR, and compliance document processing with semantic search
@@ -20,8 +21,9 @@ from pathlib import Path
 import tempfile
 
 # FastAPI and async components
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -38,6 +40,10 @@ import pinecone
 from sentence_transformers import SentenceTransformer
 import openai
 from openai import OpenAI
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Google Gemini API
 try:
@@ -56,23 +62,34 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- START: MODIFIED SECTION FOR API KEY AUTHENTICATION ---
+# The new API key for your FastAPI application, read from an environment variable.
+# The hardcoded value is a fallback for development.
+HACKRX_API_KEY = os.getenv("HACKRX_API_KEY", "6307d881a10ee9312213de36705b239bcd4b07a2719b9db6e66925543aa4f46a")
+
+bearer_scheme = HTTPBearer()
+
+async def verify_hackrx_api_key(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    """
+    Dependency to verify the Bearer token sent by the HackRx platform.
+    """
+    if credentials.credentials != HACKRX_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key for HackRx platform authentication.",
+        )
+    return credentials
+# --- END: MODIFIED SECTION ---
 
 # Enhanced Configuration
 class Config:
     # API Configuration
     API_BASE_URL = "http://localhost:8000/api/v1"
-    BEARER_TOKEN = "5198af4a74b3f28046d225858ffe5010789c03ac0a414b41e5fa08533884a424"
-    
-    # OpenAI Configuration
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    OPENAI_MODEL = "gpt-4"
+    BEARER_TOKEN = HACKRX_API_KEY  # Now uses the API key from the environment variable
     
     # Gemini Configuration
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    GEMINI_MODEL = "gemini-pro"
+    GEMINI_MODEL = "gemini-1.5-flash-latest"
     
     # LLM Provider Selection
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()  # "openai" or "gemini"
@@ -436,7 +453,7 @@ class LLMService:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,  # Low temperature for consistency
-                max_tokens=300,   # Token-efficient response
+                max_tokens=300,  # Token-efficient response
             )
             
             answer = response.choices[0].message.content.strip()
@@ -823,8 +840,12 @@ async def health_check():
         }
     }
 
+# --- START: MODIFIED ENDPOINT WITH AUTHENTICATION DEPENDENCY ---
 @app.post("/hackrx/run", response_model=QueryResponse)
-async def run_hackrx_submission(request: QueryRequest):
+async def run_hackrx_submission(
+    request: QueryRequest,
+    auth_key: HTTPAuthorizationCredentials = Depends(verify_hackrx_api_key)
+):
     """Main endpoint matching the HackRx API specification - Complete 6-step workflow"""
     start_time = datetime.utcnow()
     
@@ -861,6 +882,7 @@ async def run_hackrx_submission(request: QueryRequest):
     except Exception as e:
         logger.error(f"Error in hackrx/run endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+# --- END: MODIFIED ENDPOINT ---
 
 @app.get("/models")
 async def get_available_models():
