@@ -1,0 +1,2 @@
+[phases]
+preInstall = "pip install setuptools"
