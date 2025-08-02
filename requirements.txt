@@ -5,7 +5,6 @@ uvicorn[standard]
 pydantic
 httpx
 aiofiles
-gunicorn
 
 # Document processing
 PyPDF2
