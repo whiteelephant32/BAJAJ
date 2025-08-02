@@ -38,8 +38,8 @@ import fitz  # PyMuPDF for better PDF extraction
 import faiss
 import pinecone
 from sentence_transformers import SentenceTransformer
-import openai
-from openai import OpenAI
+from dotenv import load_dotenv
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -53,14 +53,14 @@ except ImportError:
     GEMINI_AVAILABLE = False
     logger.warning("Google Generative AI not installed. Gemini features will be disabled.")
 
-# Database
-import asyncpg
-import aiosqlite
-from sqlalchemy import create_engine, Column, String, Text, DateTime, JSON, Integer
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.postgresql import UUID
-import uuid
+# Database (commented out for stateless operation)
+# import asyncpg
+# import aiosqlite
+# from sqlalchemy import create_engine, Column, String, Text, DateTime, JSON, Integer
+# from sqlalchemy.ext.declarative import declarative_base
+# from sqlalchemy.orm import sessionmaker
+# from sqlalchemy.dialects.postgresql import UUID
+# import uuid
 
 # --- START: MODIFIED SECTION FOR API KEY AUTHENTICATION ---
 # The new API key for your FastAPI application, read from an environment variable.
@@ -83,6 +83,7 @@ async def verify_hackrx_api_key(credentials: HTTPAuthorizationCredentials = Depe
 
 # Enhanced Configuration
 class Config:
+    # OpenAI Configuration (removed)
     # API Configuration
     API_BASE_URL = "http://localhost:8000/api/v1"
     BEARER_TOKEN = HACKRX_API_KEY  # Now uses the API key from the environment variable
@@ -107,30 +108,28 @@ class Config:
     CHUNK_SIZE = 512  # Token-efficient chunking
     CHUNK_OVERLAP = 50
 
-# Database Models
-Base = declarative_base()
-
-class DocumentRecord(Base):
-    __tablename__ = "documents"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    url = Column(String, nullable=False)
-    content_hash = Column(String, nullable=False)
-    metadata = Column(JSON)
-    chunks = Column(JSON)  # Store chunk metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    processed = Column(String, default="pending")  # pending, processing, completed, failed
-
-class QueryRecord(Base):
-    __tablename__ = "queries"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String, nullable=False)
-    query = Column(Text, nullable=False)
-    response = Column(JSON)
-    processing_time = Column(Integer)  # milliseconds
-    llm_provider = Column(String, default="openai")  # Track which LLM was used
-    created_at = Column(DateTime, default=datetime.utcnow)
+# Database Models (commented out for stateless operation)
+# Base = declarative_base()
+# 
+# class DocumentRecord(Base):
+#     __tablename__ = "documents"
+#     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+#     url = Column(String, nullable=False)
+#     content_hash = Column(String, nullable=False)
+#     meta = Column(JSON)
+#     chunks = Column(JSON)  # Store chunk metadata
+#     created_at = Column(DateTime, default=datetime.utcnow)
+#     processed = Column(String, default="pending")  # pending, processing, completed, failed
+# 
+# class QueryRecord(Base):
+#     __tablename__ = "queries"
+#     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+#     document_id = Column(String, nullable=False)
+#     query = Column(Text, nullable=False)
+#     response = Column(JSON)
+#     processing_time = Column(Integer)  # milliseconds
+#     llm_provider = Column(String, default="openai")  # Track which LLM was used
+#     created_at = Column(DateTime, default=datetime.utcnow)
 
 # Pydantic Models
 class QueryRequest(BaseModel):
@@ -206,17 +205,18 @@ class DocumentProcessor:
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
             tmp_file.write(content)
             tmp_file.flush()
-            
-            try:
-                doc = fitz.open(tmp_file.name)
-                text = ""
-                for page_num in range(doc.page_count):
-                    page = doc[page_num]
-                    text += page.get_text() + "\n"
-                doc.close()
-                return text.strip()
-            finally:
-                os.unlink(tmp_file.name)
+            tmp_filename = tmp_file.name  # Save filename before closing
+
+        try:
+            doc = fitz.open(tmp_filename)
+            text = ""
+            for page_num in range(doc.page_count):
+                page = doc[page_num]
+                text += page.get_text() + "\n"
+            doc.close()
+            return text.strip()
+        finally:
+            os.unlink(tmp_filename)
     
     async def _extract_docx_content(self, content: bytes) -> str:
         """Extract text from DOCX"""
@@ -430,7 +430,6 @@ class LLMService:
         if not Config.OPENAI_API_KEY:
             raise ValueError("OpenAI API key is required")
         
-        self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
         self.provider = "openai"
     
     async def generate_answer(self, query: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -639,122 +638,54 @@ class QueryRetrievalSystem:
         # Initialize LLM service based on configuration
         self._init_llm_service()
         
-        self.db_engine = None
-        self._init_database()
+        # self.db_engine = None
+        # self._init_database()
     
     def _init_llm_service(self):
         """Initialize LLM service based on configuration"""
-        try:
-            if Config.LLM_PROVIDER == "gemini" and GEMINI_AVAILABLE and Config.GEMINI_API_KEY:
-                self.llm_service = GeminiService()
-                logger.info("Using Gemini API for LLM processing")
-            elif Config.OPENAI_API_KEY:
-                self.llm_service = LLMService()
-                logger.info("Using OpenAI API for LLM processing")
-            else:
-                raise ValueError("No valid LLM provider configured")
-        except Exception as e:
-            logger.warning(f"Failed to initialize {Config.LLM_PROVIDER}: {e}")
-            # Fallback to available provider
-            if Config.OPENAI_API_KEY:
-                self.llm_service = LLMService()
-                logger.info("Falling back to OpenAI API")
-            elif GEMINI_AVAILABLE and Config.GEMINI_API_KEY:
-                self.llm_service = GeminiService()
-                logger.info("Falling back to Gemini API")
-            else:
-                raise ValueError("No LLM provider available")
+        if Config.LLM_PROVIDER == "gemini" and GEMINI_AVAILABLE and Config.GEMINI_API_KEY:
+            self.llm_service = GeminiService()
+            logger.info("Using Gemini API for LLM processing")
+        else:
+            raise ValueError("No valid LLM provider configured")
     
     def switch_llm_provider(self, provider: str) -> bool:
-        """Switch between LLM providers"""
-        try:
-            if provider.lower() == "gemini" and GEMINI_AVAILABLE and Config.GEMINI_API_KEY:
-                self.llm_service = GeminiService()
-                Config.LLM_PROVIDER = "gemini"
-                logger.info("Switched to Gemini API")
-                return True
-            elif provider.lower() == "openai" and Config.OPENAI_API_KEY:
-                self.llm_service = LLMService()
-                Config.LLM_PROVIDER = "openai"
-                logger.info("Switched to OpenAI API")
-                return True
-            else:
-                logger.error(f"Cannot switch to {provider}: not available or not configured")
-                return False
-        except Exception as e:
-            logger.error(f"Error switching to {provider}: {e}")
+        """Switch between LLM providers (Gemini only)"""
+        if provider.lower() == "gemini" and GEMINI_AVAILABLE and Config.GEMINI_API_KEY:
+            self.llm_service = GeminiService()
+            Config.LLM_PROVIDER = "gemini"
+            logger.info("Switched to Gemini API")
+            return True
+        else:
+            logger.error(f"Cannot switch to {provider}: not available or not configured")
             return False
     
-    def _init_database(self):
-        """Initialize database connection"""
-        self.db_engine = create_engine(Config.DATABASE_URL)
-        Base.metadata.create_all(self.db_engine)
-        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.db_engine)
+    # def _init_database(self):
+    #     """Initialize database connection"""
+    #     self.db_engine = create_engine(Config.DATABASE_URL)
+    #     Base.metadata.create_all(self.db_engine)
+    #     self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.db_engine)
     
     async def process_document(self, document_url: str) -> str:
         """Process a document and return document ID - Orchestrates Steps 1-4"""
-        # Check if document already processed
+        # Check if document already processed (stateless: always process)
         content_hash = hashlib.md5(document_url.encode()).hexdigest()
-        
-        with self.SessionLocal() as db:
-            existing_doc = db.query(DocumentRecord).filter(
-                DocumentRecord.content_hash == content_hash,
-                DocumentRecord.processed == "completed"
-            ).first()
-            
-            if existing_doc:
-                logger.info(f"Document already processed: {existing_doc.id}")
-                return existing_doc.id
-        
-        # Create new document record
-        doc_id = str(uuid.uuid4())
+        # Stateless: skip DB check, always process
+        doc_id = content_hash  # Use hash as ID for stateless
         
         try:
             # Step 1: Download and extract content
             content_bytes, format_ext = await self.doc_processor.download_document(document_url)
             content_text = await self.doc_processor.extract_content(content_bytes, format_ext)
-            
             # Step 2: Chunk the document
             chunks = self.chunker.chunk_text(content_text, {'document_url': document_url})
-            
             # Step 3: Generate embeddings
             chunks = await self.embedding_service.embed_chunks(chunks)
-            
             # Step 4: Store in vector database
             await self.embedding_service.store_chunks(chunks, doc_id)
-            
-            # Update database record
-            with self.SessionLocal() as db:
-                doc_record = DocumentRecord(
-                    id=doc_id,
-                    url=document_url,
-                    content_hash=content_hash,
-                    metadata={
-                        'format': format_ext,
-                        'chunk_count': len(chunks),
-                        'content_length': len(content_text)
-                    },
-                    processed="completed"
-                )
-                db.add(doc_record)
-                db.commit()
-            
             logger.info(f"Document processed successfully: {doc_id}")
             return doc_id
-            
         except Exception as e:
-            # Update record as failed
-            with self.SessionLocal() as db:
-                doc_record = DocumentRecord(
-                    id=doc_id,
-                    url=document_url,
-                    content_hash=content_hash,
-                    processed="failed",
-                    metadata={'error': str(e)}
-                )
-                db.add(doc_record)
-                db.commit()
-            
             logger.error(f"Document processing failed: {e}")
             raise
     
@@ -764,34 +695,16 @@ class QueryRetrievalSystem:
         
         for question in questions:
             start_time = datetime.utcnow()
-            
             try:
                 # Step 4: Retrieve relevant chunks (clause matching)
                 context_chunks = await self.embedding_service.search_similar(question, k=5)
-                
                 # Step 5: Generate answer (logic evaluation)
                 result = await self.llm_service.generate_answer(question, context_chunks)
-                
-                # Store query record
-                processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-                
-                with self.SessionLocal() as db:
-                    query_record = QueryRecord(
-                        document_id=document_id,
-                        query=question,
-                        response=result,
-                        processing_time=processing_time,
-                        llm_provider=result.get('provider', Config.LLM_PROVIDER)
-                    )
-                    db.add(query_record)
-                    db.commit()
-                
+                # Store query record (stateless: skip DB)
                 answers.append(result['answer'])
-                
             except Exception as e:
                 logger.error(f"Error processing query '{question}': {e}")
                 answers.append(f"Error processing query: {str(e)}")
-        
         return answers
 
 # FastAPI Application
@@ -923,103 +836,6 @@ async def switch_model(provider: str = Query(..., description="LLM provider: 'op
     else:
         raise HTTPException(status_code=500, detail=f"Failed to switch to {provider}. Check if it's configured.")
 
-@app.get("/documents/{document_id}")
-async def get_document_info(document_id: str):
-    """Get information about a processed document"""
-    with retrieval_system.SessionLocal() as db:
-        doc = db.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
-        
-        return {
-            "id": doc.id,
-            "url": doc.url,
-            "processed": doc.processed,
-            "metadata": doc.metadata,
-            "created_at": doc.created_at.isoformat()
-        }
-
-@app.get("/documents/{document_id}/queries")
-async def get_document_queries(document_id: str):
-    """Get all queries processed for a document"""
-    with retrieval_system.SessionLocal() as db:
-        queries = db.query(QueryRecord).filter(QueryRecord.document_id == document_id).all()
-        
-        return [
-            {
-                "id": query.id,
-                "query": query.query,
-                "response": query.response,
-                "processing_time": query.processing_time,
-                "llm_provider": query.llm_provider,
-                "created_at": query.created_at.isoformat()
-            }
-            for query in queries
-        ]
-
-@app.get("/workflow-status")
-async def get_workflow_status():
-    """Get the current status of the 6-step workflow implementation"""
-    return {
-        "workflow_steps": {
-            "1": {
-                "name": "Input Documents",
-                "status": "✓ Implemented",
-                "component": "DocumentProcessor",
-                "supports": ["PDF", "DOCX", "TXT", "EML"]
-            },
-            "2": {
-                "name": "LLM Parser", 
-                "status": "✓ Enhanced",
-                "component": f"{Config.LLM_PROVIDER.upper()}Service",
-                "providers": ["OpenAI GPT-4", "Google Gemini Pro"]
-            },
-            "3": {
-                "name": "Embedding Search",
-                "status": "✓ Implemented", 
-                "component": "EmbeddingService",
-                "model": Config.EMBEDDING_MODEL
-            },
-            "4": {
-                "name": "Clause Matching",
-                "status": "✓ Implemented",
-                "component": "EmbeddingService.search_similar",
-                "method": "Semantic similarity search"
-            },
-            "5": {
-                "name": "Logic Evaluation",
-                "status": "✓ Enhanced",
-                "component": f"{Config.LLM_PROVIDER.upper()}Service",
-                "features": ["Reasoning", "Confidence scoring", "Source tracking"]
-            },
-            "6": {
-                "name": "JSON Output",
-                "status": "✓ Implemented",
-                "component": "QueryResponse",
-                "format": "Structured Pydantic model"
-            }
-        },
-        "current_config": {
-            "llm_provider": Config.LLM_PROVIDER,
-            "embedding_model": Config.EMBEDDING_MODEL,
-            "chunk_size": Config.CHUNK_SIZE,
-            "vector_db": "Pinecone" if hasattr(retrieval_system.embedding_service, 'pinecone_index') else "FAISS"
-        }
-    }
-
 if __name__ == "__main__":
-    print("🚀 Starting Enhanced LLM-Powered Query-Retrieval System")
-    print(f"🤖 Current LLM Provider: {Config.LLM_PROVIDER.upper()}")
-    print(f"📊 OpenAI Available: {bool(Config.OPENAI_API_KEY)}")
-    print(f"🧠 Gemini Available: {bool(GEMINI_AVAILABLE and Config.GEMINI_API_KEY)}")
-    print("🔄 6-Step Workflow: ✅ Fully Implemented")
-    print("📚 API Documentation: http://localhost:8000/docs")
-    
-    # Run the application
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        log_level="info",
-        reload=True
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
